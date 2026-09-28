@@ -1,0 +1,29 @@
+# Real PACS (Orthanc) + mock AI + router.
+#   export AIROUTER_DEID_SALT=$(python -c "import secrets; print(secrets.token_hex(32))")
+#   docker compose up --build
+# Then send studies from the host:  python -m tools.modality_sim --count 6
+# Browse results in Orthanc: http://localhost:8042  (AI SR + key image appear inside each chest study)
+services:
+  orthanc:
+    image: orthancteam/orthanc:latest     # pin a specific tag for anything beyond a demo
+    environment:
+      ORTHANC__NAME: "dicom-ai-router demo PACS"
+      ORTHANC__DICOM_AET: ORTHANC
+      ORTHANC__AUTHENTICATION_ENABLED: "false"
+      ORTHANC__DICOM_ALWAYS_ALLOW_STORE: "true"
+    ports: ["8042:8042", "4242:4242"]
+  mock-ai:
+    build: .
+    command: ["uvicorn", "mock_ai.app:app", "--host", "0.0.0.0", "--port", "8500"]
+    environment:
+      MOCK_AI_FAIL_RATE: "0"
+    ports: ["8500:8500"]
+  router:
+    build: .
+    depends_on: [orthanc, mock-ai]
+    environment:
+      AIROUTER_DEID_SALT: ${AIROUTER_DEID_SALT:?set AIROUTER_DEID_SALT first}
+    ports: ["11112:11112"]
+    volumes: ["router-data:/data"]
+volumes:
+  router-data:
