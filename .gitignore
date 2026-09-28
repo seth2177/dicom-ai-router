@@ -1,0 +1,12 @@
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+# Real customer data never enters the repo
+*.local.json
+real_qa/
+real_world/local/
+_LOCAL_ONLY*
+ci_demo/
+.ruff_cache/

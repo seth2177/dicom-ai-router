@@ -1,0 +1,11 @@
+# Never bake local data or secrets into an image
+.git/
+data/
+real_qa/
+real_world/local/
+_LOCAL_ONLY*
+*.local.json
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/

@@ -1,0 +1,24 @@
+[project]
+name = "dicom-ai-router"
+version = "0.2.0"
+description = "Route DICOM studies to AI models and back to PACS: rules, de-identification, SR + key image, audit."
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Seth Turnbo" }]
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = [
+  "B008",  # FastAPI's File(...) default is the framework idiom
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+  "ignore:Using `httpx` with `starlette.testclient`",   # upstream notice from newer Starlette
+]

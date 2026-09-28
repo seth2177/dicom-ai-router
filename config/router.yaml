@@ -1,0 +1,78 @@
+# dicom-ai-router configuration
+# Every hop in the pipeline is defined here, so a site go-live is a config change, not a code change.
+
+router:
+  ae_title: AIROUTER          # the AE title modalities send to
+  port: 11112                 # DICOM listener port
+  study_quiet_seconds: 3      # DICOM has no "end of study" message: a study counts as complete
+                              # once no new images have arrived for this many seconds
+  workers: 2                  # how many studies are processed at the same time
+  workdir: ./data             # inbox, crosswalk DB, audit log and results live here
+  bind_address: 0.0.0.0       # 127.0.0.1 to accept only local senders
+  allowed_calling_aes: []     # e.g. [CT01, CT02]; empty = accept any calling AE title
+
+pacs:                         # where AI results are sent back
+  ae_title: PACS
+  host: 127.0.0.1
+  port: 11113
+  retries: 3
+
+ai_endpoints:
+  lung-nodule:
+    url: http://127.0.0.1:8500/infer/lung-nodule
+    timeout_s: 30
+    retries: 3
+  ct-qa:
+    url: http://127.0.0.1:8500/infer/ct-qa
+    timeout_s: 30
+    retries: 3
+
+# Routing rules: first match wins. Every value is a regular expression, matched case-insensitively
+# against the DICOM header of the study's first image.
+rules:
+  # Calibration acquisitions (air calibration, tube conditioning) are phantom-like but deliberately
+  # uncorrected. Grading them raises false QA failures, so recognise and hold them.
+  - name: ct-calibration-hold
+    match:
+      Modality: "^CT$"
+    match_any:
+      PatientName: "AIR CALIBRATION|TUBE CONDITIONING"
+      SeriesDescription: "AIR CAL|CALIBRATION|TUBE CONDITIONING"
+    model: null
+
+  # QA before clinical. Phantom and daily-QA scans must never reach a clinical model: they produce
+  # nonsense findings, and many AI vendors bill per study. QualityControlImage=YES is the standard
+  # DICOM flag; the other fields catch vendors and older software that do not set it (some write the
+  # QA procedure name into PatientName instead).
+  # Patterns are deliberately narrow: a false positive sends a PATIENT to phantom QA. So no bare
+  # "WATER" (oral-contrast chest CTs say it) and names are anchored ("DAILY^JOHN" is a person).
+  - name: ct-qa-phantom
+    match:
+      Modality: "^CT$"
+    match_any:
+      QualityControlImage: "^YES$"
+      StudyDescription: "^(QA|QC|DAILY ?QA|PHANTOM|CONSTANCY TEST)\\b|\\bPHANTOM\\b"
+      PatientName: "^(QA|QC|PHANTOM|CATPHAN|CONSTANCY|DAILY ?QA)\\b"
+      PatientID: "^(QA|QC|PHANTOM)$|^DAILY ?QA\\b"
+      SeriesDescription: "\\b(QA|QC|PHANTOM)\\b"
+      ProtocolName: "\\b(QA|QC|PHANTOM)"
+    model: ct-qa
+  - name: ct-chest-by-bodypart
+    match:
+      Modality: "^CT$"
+      BodyPartExamined: "^(CHEST|THORAX|LUNG)$"
+    model: lung-nodule
+    series: largest            # the model wants one axial volume, not every recon
+  - name: ct-chest-by-description
+    match:
+      Modality: "^CT$"
+      StudyDescription: "chest|thorax|lung"
+    model: lung-nodule
+    series: largest
+
+deid:
+  # The pseudonym salt is a SECRET and is read from the AIROUTER_DEID_SALT environment variable.
+  # The router refuses to start without one (>= 16 chars). Generate one with:
+  #   python -c "import secrets; print(secrets.token_hex(32))"
+  salt: ""
+  reject_burned_in_annotation: true   # never send images that carry burned-in PHI
