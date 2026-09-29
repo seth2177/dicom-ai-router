@@ -10,3 +10,4 @@ real_world/local/
 _LOCAL_ONLY*
 ci_demo/
 .ruff_cache/
+dist/

@@ -6,7 +6,7 @@ known size and side. Because we placed the nodule, we know the ground truth.
 That truth is saved to data/truth/<StudyInstanceUID>.json -- it is what the
 llm-eval-radiology stage scores the AI and the LLM report against.
 
-  python -m tools.modality_sim --count 6 --seed 7
+  python -m airouter.tools.modality_sim --count 6 --seed 7
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def make_phantom_volume(rng: np.random.Generator, qa: dict) -> np.ndarray:
 
 def expected_qa(qa: dict) -> dict:
     """Analytic ground truth for what an ideal ROI measurement should read."""
-    from mock_ai.qa import grade
+    from ..mock_ai.qa import grade
     R = PHANTOM_DIAMETER_MM / 2 / SPACING_MM
     roi_r = 0.1 * R
     edge_d = R - 10.0 / SPACING_MM - roi_r
