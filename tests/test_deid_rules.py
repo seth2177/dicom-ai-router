@@ -5,7 +5,7 @@ import pytest
 from airouter import deid
 from airouter.config import load_config
 from airouter.rules import match_rule
-from tools.modality_sim import make_study
+from airouter.tools.modality_sim import make_study
 
 CFG = Path(__file__).resolve().parents[1] / "config" / "router.yaml"
 SALT_A, SALT_B = "a" * 32, "b" * 32

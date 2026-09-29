@@ -15,8 +15,8 @@ from airouter.config import load_config
 from airouter.pipeline import select_instances
 from airouter.router import Router
 from airouter.rules import match_rule
+from airouter.tools.modality_sim import make_study
 from tests import synthetic_qa
-from tools.modality_sim import make_study
 
 CFG = Path(__file__).resolve().parents[1] / "config" / "router.yaml"
 SALT = secrets.token_hex(32)
@@ -151,7 +151,7 @@ def test_model_server_handles_mixed_matrix_sizes():
     """A second recon at a different matrix size must not crash the volume stack."""
     from fastapi.testclient import TestClient
 
-    from mock_ai.app import app
+    from airouter.mock_ai.app import app
     a, _ = make_study(8, "chest")
     b = make_study(8, "chest")[0][:3]
     for d in b:

@@ -4,7 +4,7 @@ Stores to data/pacs/<StudyInstanceUID>/<Modality>_<SOPInstanceUID>.dcm and
 writes a PNG of every Secondary Capture so you can open the AI key image
 without a DICOM viewer. Use Orthanc (docker-compose.yml) for a real PACS UI.
 
-  python -m tools.mini_pacs --port 11113
+  python -m airouter.tools.mini_pacs --port 11113
 """
 from __future__ import annotations
 

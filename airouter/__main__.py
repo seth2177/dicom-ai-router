@@ -1,5 +1,8 @@
-"""Run the router as a long-lived service, inspect its state, or re-run studies.
+"""Run the router as a long-lived service, inspect its state, re-run studies, or run the demo.
 
+Installed from PyPI, `dicom-ai-router` is the same command as `python -m airouter`.
+
+  python -m airouter demo   [--count 12] [--fail-rate 0.4] ...   the whole pipeline, synthetic data
   python -m airouter serve  [--config config/router.yaml]
   python -m airouter status [--config config/router.yaml]
   python -m airouter rerun  --failed | <StudyInstanceUID> [...]   [--config config/router.yaml]
@@ -9,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import socket
+import sys
 import time
 
 from .audit import Audit
@@ -26,8 +30,13 @@ def _port_in_use(host: str, port: int) -> bool:
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["demo"]:
+        from .demo import main as demo
+        demo(argv[1:])
+        return
     ap = argparse.ArgumentParser(prog="airouter")
-    ap.add_argument("command", choices=["serve", "status", "rerun"])
+    ap.add_argument("command", choices=["demo", "serve", "status", "rerun"])
     ap.add_argument("studies", nargs="*", help="rerun: StudyInstanceUIDs to re-run")
     ap.add_argument("--failed", action="store_true", help="rerun: every study currently FAILED")
     ap.add_argument("--force", action="store_true", help="rerun: run even if the service seems to be up")
