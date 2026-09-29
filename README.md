@@ -1,6 +1,6 @@
 # dicom-ai-router
 
-[![CI](https://github.com/seth2177/dicom-ai-router/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/dicom-ai-router/actions/workflows/ci.yml)
+[![CI](https://github.com/seth2177/dicom-ai-router/actions/workflows/ci.yml/badge.svg)](https://github.com/seth2177/dicom-ai-router/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/dicom-ai-router)](https://pypi.org/project/dicom-ai-router/)
 
 **Get imaging AI into a live radiology workflow and back out again, without leaking PHI or slowing the scanner.**
 
@@ -35,6 +35,15 @@ git clone https://github.com/seth2177/dicom-ai-router && cd dicom-ai-router
 python -m pip install -r requirements.txt        # Windows: py -3.12 -m pip install -r requirements.txt
 python run_demo.py                               # Windows: py -3.12 run_demo.py
 ```
+
+Or install it from PyPI and run the same demo from any folder:
+
+```bash
+pip install dicom-ai-router
+dicom-ai-router demo
+```
+
+Install from PyPI, run from source, or use the container (`docker compose up --build`, below).
 
 That one command starts a mini-PACS, the model server and the router. A synthetic CT scanner then sends a mix of
 chest CTs, head CTs and daily-QA water phantoms (some with injected CT-number drift or cupping):
