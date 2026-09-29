@@ -13,7 +13,7 @@ This follows one chest CT from the moment the tech hits **Send** until the AI re
 
 ---
 
-## Hop 1: The scanner sends images (`tools/modality_sim.py`)
+## Hop 1: The scanner sends images (`airouter/tools/modality_sim.py`)
 
 **What happens.** The scanner opens a DICOM *association* to `AIROUTER@host:11112`. It proposes the SOP class (CT Image Storage) and the transfer syntaxes it can speak. Then it sends 24 slices with C-STORE, one per image.
 
@@ -99,7 +99,7 @@ audit, so one dose screen never fails a whole study. A rule can also ask for onl
 
 ---
 
-## Hop 6: AI inference (`airouter/ai_client.py`, `mock_ai/`)
+## Hop 6: AI inference (`airouter/ai_client.py`, `airouter/mock_ai/`)
 
 **One contract for every model.** Each model answers with the same fields: `result`, `summary_lines`,
 `key_sop_instance_uid`, `overlays` and `display_window`. So adding a model is config, not router code. The
@@ -113,7 +113,7 @@ side, size in mm, key slice and confidence.
 
 **Retries.** A 5xx or network error gets retried with exponential backoff (0.5 s, 1 s, 2 s…). A 4xx is not retried, because the request itself is wrong. Run `python run_demo.py --fail-rate 0.4` to watch the router ride through a flaky model.
 
-**The mock model** (`mock_ai/detector.py`) is simple geometry, not AI. It finds dense blobs fully enclosed by lung and reports the largest. It **misses nodules of about 3 mm and faint ground-glass ones (≈ −350 HU)**, and finds solid nodules of 5 mm and up. That's on purpose: the eval stage needs real errors to measure.
+**The mock model** (`airouter/mock_ai/detector.py`) is simple geometry, not AI. It finds dense blobs fully enclosed by lung and reports the largest. It **misses nodules of about 3 mm and faint ground-glass ones (≈ −350 HU)**, and finds solid nodules of 5 mm and up. That's on purpose: the eval stage needs real errors to measure.
 
 **Notice** that the model sees `2.25.…` UIDs and `ANON^…` names, not the real ones. Every other person name and AE
 title, at any depth, is emptied, and `tests/test_security.py` checks this with nested cases and the independent

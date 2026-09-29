@@ -20,11 +20,11 @@ flowchart LR
     RU -.->|no rule matched| X["IGNORED<br/>nothing leaves"]
 ```
 
-![AI key image returned to PACS](docs/key-image.png)
+![AI key image returned to PACS](https://raw.githubusercontent.com/seth2177/dicom-ai-router/main/docs/key-image.png)
 
 *Key image as it lands in PACS: the finding is circled, "NOT FOR DIAGNOSIS" is burned in, and the image sits in the real patient's study. The model itself only ever saw pseudonymous UIDs.*
 
-<img src="docs/key-image-qa.png" width="360" alt="ct-qa key image"> *A daily-QA phantom with a +9 HU CT-number drift: five ROIs, a FAIL verdict and the reason, returned to PACS as a key image and SR.*
+<img src="https://raw.githubusercontent.com/seth2177/dicom-ai-router/main/docs/key-image-qa.png" width="360" alt="ct-qa key image"> *A daily-QA phantom with a +9 HU CT-number drift: five ROIs, a FAIL verdict and the reason, returned to PACS as a key image and SR.*
 
 ## Run it (about 2 minutes)
 
@@ -68,7 +68,7 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 
 | Real-world problem | How the router handles it | Where |
 |---|---|---|
-| Phantom / daily-QA scans reaching a clinical model (junk findings, per-study billing) | QA rule first: `QualityControlImage=YES` plus vendor conventions; QA goes to a real `ct-qa` model, calibration scans are held | `router.yaml`, `mock_ai/qa.py` |
+| Phantom / daily-QA scans reaching a clinical model (junk findings, per-study billing) | QA rule first: `QualityControlImage=YES` plus vendor conventions; QA goes to a real `ct-qa` model, calibration scans are held | `router.yaml`, `airouter/mock_ai/qa.py` |
 | A slow receiver backs up the scanner's send queue | Answers C-STORE `Success` immediately, then does all work on worker threads | `router.py` |
 | DICOM has no "study finished" message | Quiet-period timer per study, tunable per site | `router.py`, `router.yaml` |
 | Headers are inconsistent (blank BodyPartExamined) | Ordered regex rules with fallbacks; no match means nothing leaves | `rules.py` |
@@ -82,18 +82,18 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 | Models and networks fail | Retry with exponential backoff; 4xx never retried; failures recorded, never dropped | `ai_client.py`, `sender.py` |
 | Security review and turnaround time | JSONL audit of every hop with ms timings, no names or MRNs | `audit.py` |
 
-**Walkthrough of every hop:** [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)
+**Walkthrough of every hop:** [docs/HOW-IT-WORKS.md](https://github.com/seth2177/dicom-ai-router/blob/main/docs/HOW-IT-WORKS.md)
 
 ## Layout
 
 ```
-airouter/        the router: receive, route, de-identify, infer, build results, send, audit
-                 site_scrub.py + phi_audit.py: publish-grade site scrub and its independent audit
-mock_ai/         model server: lung-nodule (explainable stand-in) and ct-qa (real phantom QA measurement)
-tools/           synthetic CT scanner and mini-PACS
-config/          router.yaml: AE titles, ports, endpoints, rules, de-id salt
-tests/           unit and end-to-end tests over real DICOM networking on localhost
-run_demo.py      the whole pipeline in one command
+airouter/          the router: receive, route, de-identify, infer, build results, send, audit
+                   site_scrub.py + phi_audit.py: publish-grade site scrub and its independent audit
+airouter/mock_ai/  model server: lung-nodule (explainable stand-in) and ct-qa (real phantom QA measurement)
+airouter/tools/    synthetic CT scanner and mini-PACS
+config/            router.yaml: AE titles, ports, endpoints, rules, de-id salt
+tests/             unit and end-to-end tests over real DICOM networking on localhost
+run_demo.py        the whole pipeline in one command
 ```
 
 ## Next stages
