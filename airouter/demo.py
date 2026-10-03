@@ -3,6 +3,7 @@
   dicom-ai-router demo                 # 12 studies (from a checkout: python run_demo.py)
   dicom-ai-router demo --count 20 --seed 3
   dicom-ai-router demo --fail-rate 0.4 # watch the router retry a flaky AI endpoint
+  dicom-ai-router demo --transport stow-rs   # send images to the model as DICOMweb STOW-RS
 
 Then look in ./data:
   pacs/<study>/OT_*.png   the AI key images, as a radiologist would see them
@@ -63,6 +64,7 @@ def main(argv=None) -> list[dict]:
     ap.add_argument("--workdir", default="data")
     ap.add_argument("--fail-rate", type=float, default=0.0, help="fraction of AI calls that return HTTP 503 (random)")
     ap.add_argument("--fail-first", type=int, default=0, help="every study's first N AI calls return HTTP 503")
+    ap.add_argument("--transport", choices=["multipart", "stow-rs"], default="multipart", help="how images go to the model")
     ap.add_argument("--keep", action="store_true", help="do not wipe the workdir first")
     ap.add_argument("--base-port", type=int, default=11112)
     ap.add_argument("--real", type=Path, help="also send every DICOM file under this folder (e.g. real_world/samples)")
@@ -94,7 +96,7 @@ def _run(a, work: Path) -> list[dict]:
                    "bind_address": "127.0.0.1"},
         "deid": {"salt": os.environ.get("AIROUTER_DEID_SALT") or secrets.token_hex(32)},
         "pacs": {"port": pacs_port},
-        "ai_endpoints": {m: {"url": f"http://127.0.0.1:{ai_port}/infer/{m}", "retries": 5}
+        "ai_endpoints": {m: {"url": f"http://127.0.0.1:{ai_port}/infer/{m}", "retries": 5, "transport": a.transport}
                          for m in ("lung-nodule", "ct-qa")},
     })
 

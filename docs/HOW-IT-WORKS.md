@@ -106,12 +106,14 @@ audit, so one dose screen never fails a whole study. A rule can also ask for onl
 `ct-qa` model is a real measurement: a center ROI and four edge ROIs, CT number, noise and uniformity,
 graded against ACR water criteria or against the scanner's own limits.
 
-**What happens.** The de-identified images are POSTed to the model as a multipart/form-data upload of DICOM Part-10
-files. That's a simple stand-in for a vendor API. A standards-based deployment would send a DICOMweb STOW-RS
-request (multipart/related), which is a change confined to `ai_client.py`. The model returns JSON with a finding,
-side, size in mm, key slice and confidence.
+**What happens.** The de-identified images are POSTed to the model as DICOM Part-10 instances. How is set per
+endpoint with `transport:`. The default, `multipart`, is a multipart/form-data upload (field `files`), a simple
+stand-in for a vendor API. `stow-rs` sends a DICOMweb STOW-RS request (PS3.18): `multipart/related;
+type="application/dicom"`, one instance per part. The mock model accepts both on the same URL. Either way the model
+returns the same JSON with a finding, side, size in mm, key slice and confidence. With STOW-RS that JSON stands in
+for the Store Instances Response a plain DICOMweb archive would return.
 
-**Retries.** A 5xx or network error gets retried with exponential backoff (0.5 s, 1 s, 2 s…). A 4xx is not retried, because the request itself is wrong. Run `python run_demo.py --fail-rate 0.4` to watch the router ride through a flaky model.
+**Retries.** Same for both transports. A 5xx or network error gets retried with exponential backoff (0.5 s, 1 s, 2 s…). A 4xx is not retried, because the request itself is wrong. Run `python run_demo.py --fail-rate 0.4` to watch the router ride through a flaky model.
 
 **The mock model** (`airouter/mock_ai/detector.py`) is simple geometry, not AI. It finds dense blobs fully enclosed by lung and reports the largest. It **misses nodules of about 3 mm and faint ground-glass ones (≈ −350 HU)**, and finds solid nodules of 5 mm and up. That's on purpose: the eval stage needs real errors to measure.
 

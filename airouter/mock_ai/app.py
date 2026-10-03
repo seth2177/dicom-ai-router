@@ -1,6 +1,8 @@
 """Model server (FastAPI). Stand-in for vendor model endpoints.
 
-POST /infer/lung-nodule   multipart 'files' = DICOM Part-10 instances of one study
+POST /infer/lung-nodule   DICOM Part-10 instances of one study, as either
+                            multipart/form-data, field 'files', or
+                            STOW-RS: multipart/related; type="application/dicom" (PS3.18)
 POST /infer/ct-qa         same, for water-phantom QA studies
 GET  /health
 
@@ -29,7 +31,7 @@ import time
 from collections import defaultdict
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydicom import dcmread
 
 from .detector import detect
@@ -48,10 +50,40 @@ _attempts: dict[str, int] = defaultdict(int)
 _attempts_lock = threading.Lock()
 
 
-def _load(files: list[UploadFile]) -> list:
+async def dicom_parts(request: Request) -> list[bytes]:
+    """The request's DICOM instances, whichever transport the router used."""
+    ctype = request.headers.get("content-type", "")
+    if ctype.lower().startswith("multipart/related"):
+        return stow_parts(ctype, await request.body())
+    if ctype.lower().startswith("multipart/form-data"):
+        form = await request.form()
+        return [await f.read() for f in form.getlist("files") if hasattr(f, "read")]
+    raise HTTPException(415, "expected multipart/form-data or multipart/related; type=\"application/dicom\"")
+
+
+def stow_parts(ctype: str, body: bytes) -> list[bytes]:
+    """Split a STOW-RS (PS3.18) multipart/related body into its application/dicom parts."""
+    params = {k.strip().lower(): v.strip().strip('"') for k, _, v in (p.partition("=") for p in ctype.split(";")[1:])}
+    if params.get("type", "").lower() != "application/dicom" or not params.get("boundary"):
+        raise HTTPException(415, 'STOW-RS needs type="application/dicom" and a boundary')
+    delim = b"--" + params["boundary"].encode()
+    parts = []
+    for chunk in body.split(delim)[1:]:
+        if chunk.startswith(b"--"):                  # closing delimiter
+            break
+        head, sep, content = chunk.partition(b"\r\n\r\n")
+        if not sep or b"content-type: application/dicom" not in head.lower():
+            raise HTTPException(415, "every STOW-RS part must be application/dicom")
+        parts.append(content[:-2] if content.endswith(b"\r\n") else content)
+    return parts
+
+
+def _load(parts: list[bytes]) -> list:
     # Endpoints are plain `def`: FastAPI runs them in a worker thread pool, so a slow
     # (CPU-bound) inference does not block other requests the way it would in `async def`.
-    slices = [dcmread(io.BytesIO(f.file.read())) for f in files]
+    if not parts:
+        raise HTTPException(422, "no DICOM instances in the request")
+    slices = [dcmread(io.BytesIO(b)) for b in parts]
     study = str(slices[0].get("StudyInstanceUID", "")) if slices else ""
     with _attempts_lock:
         if len(_attempts) > 10_000:                # bounded: this is test instrumentation
@@ -91,7 +123,7 @@ def _envelope(model, slices, t0, **body):
 
 
 @app.post("/infer/lung-nodule")
-def lung_nodule(files: list[UploadFile] = File(...)):
+def lung_nodule(files: list[bytes] = Depends(dicom_parts)):
     t0 = time.perf_counter()
     slices = _largest_consistent(_load(files))
     vol = _volume(slices)
@@ -113,7 +145,7 @@ def lung_nodule(files: list[UploadFile] = File(...)):
 
 
 @app.post("/infer/ct-qa")
-def ct_qa(files: list[UploadFile] = File(...)):
+def ct_qa(files: list[bytes] = Depends(dicom_parts)):
     t0 = time.perf_counter()
     slices = _load(files)
     by_series = defaultdict(list)

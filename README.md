@@ -66,6 +66,7 @@ Other things to try:
 
 ```bash
 python run_demo.py --fail-rate 0.4     # flaky AI endpoint: watch retries with backoff keep studies flowing
+python run_demo.py --transport stow-rs # images go to the model as DICOMweb STOW-RS instead of a form upload
 python -m airouter status              # state of every study (after a demo run)
 python -m pip install -r requirements-dev.txt && python -m pytest -q
                                        # PHI + site scrub, audit incl. negative control, receiver security,
@@ -89,6 +90,7 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 | Radiologists need to see it; systems need to parse it | Basic Text SR *and* a Secondary Capture key image, both in the original study | `results.py` |
 | Late images change the answer after a result is already in PACS | The revised SR is a new instance that references the one it replaces (`PredecessorDocumentsSequence`); the chain is kept in SQLite, so it survives restarts | `results.py`, `pipeline.py`, `store.py` |
 | Picky PACS reject associations | Proposes only the SOP classes actually being sent | `sender.py` |
+| Model vendors want a standard upload, not a bespoke API | Per endpoint, `transport: stow-rs` sends the de-identified instances as a DICOMweb STOW-RS request (multipart/related, PS3.18); the form upload stays the default | `ai_client.py`, `router.yaml` |
 | Models and networks fail | Retry with exponential backoff; 4xx never retried; failures recorded, never dropped | `ai_client.py`, `sender.py` |
 | Security review and turnaround time | JSONL audit of every hop with ms timings, no names or MRNs | `audit.py` |
 
@@ -147,7 +149,9 @@ The demo generates a throwaway salt on every run. The service refuses to start w
 
 Known limits: the de-identification is a documented subset of PS3.15, not a certified profile. It retains
 study and series descriptions, which are pattern-scrubbed. Pixel data is never altered, so burned-in images are
-dropped. The model transport is multipart/form-data, not STOW-RS.
+dropped. With `transport: stow-rs` the request is DICOMweb STOW-RS, but the model answers with the router's
+findings JSON, not a PS3.18 Store Instances Response. Neither transport sends credentials (no bearer token or mTLS
+to the model).
 
 This is a demonstration and reference build, not a medical device. All patients, identifiers and images in the repo are synthetic. The de-identification covers a documented subset of the standard and does not alter pixel data. Don't point it at production PHI without a formal review.
 

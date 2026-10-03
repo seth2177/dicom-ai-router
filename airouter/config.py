@@ -18,11 +18,15 @@ class PacsCfg:
     retries: int = 3
 
 
+TRANSPORTS = ("multipart", "stow-rs")
+
+
 @dataclass
 class EndpointCfg:
     url: str
     timeout_s: float = 30
     retries: int = 3
+    transport: str = "multipart"      # "multipart" (form upload) or "stow-rs" (DICOMweb, PS3.18)
 
 
 @dataclass
@@ -92,6 +96,9 @@ def load_config(path: str | Path, overrides: dict | None = None, require_salt: b
     )
     if require_salt:
         deid.check_salt(cfg.deid_salt)      # refuse to run with a missing / placeholder / short salt
+    for name, ep in cfg.endpoints.items():
+        if ep.transport not in TRANSPORTS:
+            raise ValueError(f"endpoint {name!r}: transport must be one of {TRANSPORTS}, not {ep.transport!r}")
     for rule in cfg.rules:
         if rule.model is not None and rule.model not in cfg.endpoints:
             raise ValueError(f"rule {rule.name!r} points at unknown model {rule.model!r}")
