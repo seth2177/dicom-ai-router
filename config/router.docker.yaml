@@ -1,31 +1,35 @@
 # dicom-ai-router configuration
 # Every hop in the pipeline is defined here, so a site go-live is a config change, not a code change.
+# Container config: each ${...} is filled from the environment (default after :-), so docker compose runs on the defaults
+# and deploy/aws sets the site values (PACS, model URLs) as task environment variables.
 
 router:
-  ae_title: AIROUTER          # the AE title modalities send to
+  ae_title: ${AIROUTER_AE_TITLE:-AIROUTER}   # the AE title modalities send to
   port: 11112                 # DICOM listener port
   study_quiet_seconds: 3      # DICOM has no "end of study" message: a study counts as complete
                               # once no new images have arrived for this many seconds
   workers: 2                  # how many studies are processed at the same time
   workdir: /data             # inbox, crosswalk DB, audit log and results live here
   bind_address: 0.0.0.0       # 127.0.0.1 to accept only local senders
-  allowed_calling_aes: []     # e.g. [CT01, CT02]; empty = accept any calling AE title
+  allowed_calling_aes: [${AIROUTER_ALLOWED_CALLING_AES:-}]   # e.g. CT01, CT02; empty = accept any calling AE title
 
 pacs:                         # where AI results are sent back
-  ae_title: ORTHANC
-  host: orthanc
-  port: 4242
+  ae_title: ${AIROUTER_PACS_AE_TITLE:-ORTHANC}
+  host: ${AIROUTER_PACS_HOST:-orthanc}
+  port: ${AIROUTER_PACS_PORT:-4242}
   retries: 3
 
 ai_endpoints:
   lung-nodule:
-    url: http://mock-ai:8500/infer/lung-nodule
+    url: ${AIROUTER_AI_URL_LUNG_NODULE:-http://mock-ai:8500/infer/lung-nodule}
     timeout_s: 30
     retries: 3
+    transport: ${AIROUTER_AI_TRANSPORT:-multipart}   # multipart (form upload) or stow-rs (DICOMweb STOW-RS, PS3.18)
   ct-qa:
-    url: http://mock-ai:8500/infer/ct-qa
+    url: ${AIROUTER_AI_URL_CT_QA:-http://mock-ai:8500/infer/ct-qa}
     timeout_s: 30
     retries: 3
+    transport: ${AIROUTER_AI_TRANSPORT:-multipart}
 
 # Routing rules: first match wins. Every value is a regular expression, matched case-insensitively
 # against the DICOM header of the study's first image.

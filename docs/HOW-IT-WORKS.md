@@ -106,12 +106,14 @@ audit, so one dose screen never fails a whole study. A rule can also ask for onl
 `ct-qa` model is a real measurement: a center ROI and four edge ROIs, CT number, noise and uniformity,
 graded against ACR water criteria or against the scanner's own limits.
 
-**What happens.** The de-identified images are POSTed to the model as a multipart/form-data upload of DICOM Part-10
-files. That's a simple stand-in for a vendor API. A standards-based deployment would send a DICOMweb STOW-RS
-request (multipart/related), which is a change confined to `ai_client.py`. The model returns JSON with a finding,
-side, size in mm, key slice and confidence.
+**What happens.** The de-identified images are POSTed to the model as DICOM Part-10 instances. How is set per
+endpoint with `transport:`. The default, `multipart`, is a multipart/form-data upload (field `files`), a simple
+stand-in for a vendor API. `stow-rs` sends a DICOMweb STOW-RS request (PS3.18): `multipart/related;
+type="application/dicom"`, one instance per part. The mock model accepts both on the same URL. Either way the model
+returns the same JSON with a finding, side, size in mm, key slice and confidence. With STOW-RS that JSON stands in
+for the Store Instances Response a plain DICOMweb archive would return.
 
-**Retries.** A 5xx or network error gets retried with exponential backoff (0.5 s, 1 s, 2 s…). A 4xx is not retried, because the request itself is wrong. Run `python run_demo.py --fail-rate 0.4` to watch the router ride through a flaky model.
+**Retries.** Same for both transports. A 5xx or network error gets retried with exponential backoff (0.5 s, 1 s, 2 s…). A 4xx is not retried, because the request itself is wrong. Run `python run_demo.py --fail-rate 0.4` to watch the router ride through a flaky model.
 
 **The mock model** (`airouter/mock_ai/detector.py`) is simple geometry, not AI. It finds dense blobs fully enclosed by lung and reports the largest. It **misses nodules of about 3 mm and faint ground-glass ones (≈ −350 HU)**, and finds solid nodules of 5 mm and up. That's on purpose: the eval stage needs real errors to measure.
 
@@ -157,7 +159,10 @@ unfinished, and the next start picks it up again. If more images arrive while a 
 again after the current run finishes, never twice at once. Result UIDs are deterministic: the series is derived from
 the study and the model, and each instance also from a digest of what the result says. A re-run with the same
 findings re-sends the identical objects, with no duplicates. A re-run with different findings (late images) adds a
-new instance in the same series, as DICOM requires for changed content, so a PACS can't silently keep the stale one. A study that
+new instance in the same series, as DICOM requires for changed content, so a PACS can't silently keep the stale one.
+That revised SR carries `PredecessorDocumentsSequence` (study > series > instance) pointing at the SR it replaces,
+so a reporting system can tell which result is current. Every SR delivered to PACS is recorded in the `sent_sr`
+table in SQLite, so the chain survives a restart; a SR is recorded only after PACS accepted it. A study that
 FAILED can be re-run with `python -m airouter rerun --failed` once the fault is fixed.
 
 ## The audit trail (`data/audit.jsonl`)

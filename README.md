@@ -66,10 +66,12 @@ Other things to try:
 
 ```bash
 python run_demo.py --fail-rate 0.4     # flaky AI endpoint: watch retries with backoff keep studies flowing
+python run_demo.py --transport stow-rs # images go to the model as DICOMweb STOW-RS instead of a form upload
 python -m airouter status              # state of every study (after a demo run)
 python -m pip install -r requirements-dev.txt && python -m pytest -q
                                        # PHI + site scrub, audit incl. negative control, receiver security,
-                                       # SR structure, QA model, routing, end to end over real DICOM networking
+                                       # SR structure and revisions, QA model, routing, both model transports,
+                                       # container config, end to end over real DICOM networking
 docker compose up --build              # router + mock AI + Orthanc PACS at http://localhost:8042 (set AIROUTER_DEID_SALT first)
 ```
 
@@ -87,11 +89,16 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 | Untrusted network input | UIDs validated before they become file paths; called AE enforced; optional calling-AE allow-list; atomic writes | `router.py` |
 | Real studies contain localizers and dose screens | Dropped per image and audited, never failing the study; `series: largest` for single-volume models | `pipeline.py` |
 | Radiologists need to see it; systems need to parse it | Basic Text SR *and* a Secondary Capture key image, both in the original study | `results.py` |
+| Late images change the answer after a result is already in PACS | The revised SR is a new instance that references the one it replaces (`PredecessorDocumentsSequence`); the chain is kept in SQLite, so it survives restarts | `results.py`, `pipeline.py`, `store.py` |
 | Picky PACS reject associations | Proposes only the SOP classes actually being sent | `sender.py` |
+| Model vendors want a standard upload, not a bespoke API | Per endpoint, `transport: stow-rs` sends the de-identified instances as a DICOMweb STOW-RS request (multipart/related, PS3.18); the form upload stays the default | `ai_client.py`, `router.yaml` |
 | Models and networks fail | Retry with exponential backoff; 4xx never retried; failures recorded, never dropped | `ai_client.py`, `sender.py` |
-| Security review and turnaround time | JSONL audit of every hop with ms timings, no names or MRNs | `audit.py` |
+| Security review and turnaround time | JSONL audit of every hop with ms timings, no names or MRNs; can also go to stdout for a log shipper | `audit.py` |
+| Hospital IT wants it in their cloud account, reachable only over the site VPN | CloudFormation reference: one Fargate task behind an internal NLB open only to the site CIDR, encrypted EFS, salt in Secrets Manager, audit in CloudWatch Logs, no public IPs. Linted, not deployed by CI | `deploy/aws/`, `docs/AWS.md` |
 
 **Walkthrough of every hop:** [docs/HOW-IT-WORKS.md](https://github.com/seth2177/dicom-ai-router/blob/main/docs/HOW-IT-WORKS.md)
+
+**Running it on AWS:** [docs/AWS.md](https://github.com/seth2177/dicom-ai-router/blob/main/docs/AWS.md), a CloudFormation reference deployment (ECS Fargate behind an internal NLB, EFS, Secrets Manager, CloudWatch Logs) with PHI/HIPAA notes and a cost estimate.
 
 ## Layout
 
@@ -101,6 +108,9 @@ airouter/          the router: receive, route, de-identify, infer, build results
 airouter/mock_ai/  model server: lung-nodule (explainable stand-in) and ct-qa (real phantom QA measurement)
 airouter/tools/    synthetic CT scanner and mini-PACS
 config/            router.yaml: AE titles, ports, endpoints, rules, de-id salt
+                   router.docker.yaml: the container config; site values come from ${...} environment variables
+deploy/aws/        CloudFormation reference deployment (ECS Fargate, internal NLB, EFS, Secrets Manager)
+docs/              HOW-IT-WORKS.md (every hop), AWS.md (deploy, PHI/HIPAA notes, cost)
 tests/             unit and end-to-end tests over real DICOM networking on localhost
 run_demo.py        the whole pipeline in one command
 ```
@@ -132,9 +142,10 @@ The demo generates a throwaway salt on every run. The service refuses to start w
 
 ## Quality
 
-- The test suite runs in CI on Linux and Windows, Python 3.11 and 3.12, plus `ruff`.
+- The test suite runs in CI on Linux and Windows, Python 3.11 and 3.12, plus `ruff`, and `cfn-lint` on the AWS template.
 - Every SR and Secondary Capture the router produces validates against the DICOM standard (2026d IOD
-  definitions, `dicom-validator`).
+  definitions, `dicom-validator`). Revised SRs carrying `PredecessorDocumentsSequence` and STOW-RS demo
+  outputs have so far been validated against the 2020c edition.
 - Adversarial testing, including attacking my own scrubber and audit, found real problems: a default salt
   that made pseudonyms reversible, a multi-valued name that leaked past the audit, person names nested in
   sequences reaching the model, a path traversal in the receiver, SR evidence grouped wrongly for
@@ -146,8 +157,11 @@ The demo generates a throwaway salt on every run. The service refuses to start w
 
 Known limits: the de-identification is a documented subset of PS3.15, not a certified profile. It retains
 study and series descriptions, which are pattern-scrubbed. Pixel data is never altered, so burned-in images are
-dropped. The model transport is multipart/form-data, not STOW-RS. A revised result (after late images) is a new
-instance in the same series; the SR does not yet reference its predecessor (`PredecessorDocumentsSequence`).
+dropped. With `transport: stow-rs` the request is DICOMweb STOW-RS, but the model answers with the router's
+findings JSON, not a PS3.18 Store Instances Response. Neither transport sends credentials (no bearer token or mTLS
+to the model). The router never deletes its inbox copies, so storage grows until a retention job exists. DICOM
+in and out is plain DICOM, not DICOM TLS; it relies on the network path (VPN) for encryption. Study state is SQLite,
+so one router instance per working directory.
 
 This is a demonstration and reference build, not a medical device. All patients, identifiers and images in the repo are synthetic. The de-identification covers a documented subset of the standard and does not alter pixel data. Don't point it at production PHI without a formal review.
 

@@ -54,3 +54,15 @@ jobs:
       - name: Demo from outside the repo
         working-directory: ${{ runner.temp }}
         run: dicom-ai-router demo --count 4
+
+  cloudformation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: cfn-lint
+        run: |
+          python -m pip install cfn-lint
+          cfn-lint deploy/aws/airouter.yaml

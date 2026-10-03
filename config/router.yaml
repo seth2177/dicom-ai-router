@@ -22,10 +22,12 @@ ai_endpoints:
     url: http://127.0.0.1:8500/infer/lung-nodule
     timeout_s: 30
     retries: 3
+    transport: multipart      # multipart (form upload) or stow-rs (DICOMweb STOW-RS, PS3.18)
   ct-qa:
     url: http://127.0.0.1:8500/infer/ct-qa
     timeout_s: 30
     retries: 3
+    transport: multipart
 
 # Routing rules: first match wins. Every value is a regular expression, matched case-insensitively
 # against the DICOM header of the study's first image.
