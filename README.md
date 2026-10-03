@@ -144,7 +144,8 @@ The demo generates a throwaway salt on every run. The service refuses to start w
 
 - The test suite runs in CI on Linux and Windows, Python 3.11 and 3.12, plus `ruff`, and `cfn-lint` on the AWS template.
 - Every SR and Secondary Capture the router produces validates against the DICOM standard (2026d IOD
-  definitions, `dicom-validator`).
+  definitions, `dicom-validator`). Revised SRs carrying `PredecessorDocumentsSequence` and STOW-RS demo
+  outputs have so far been validated against the 2020c edition.
 - Adversarial testing, including attacking my own scrubber and audit, found real problems: a default salt
   that made pseudonyms reversible, a multi-valued name that leaked past the audit, person names nested in
   sequences reaching the model, a path traversal in the receiver, SR evidence grouped wrongly for
