@@ -96,6 +96,8 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 
 **Walkthrough of every hop:** [docs/HOW-IT-WORKS.md](https://github.com/seth2177/dicom-ai-router/blob/main/docs/HOW-IT-WORKS.md)
 
+**Running it on AWS:** [docs/AWS.md](https://github.com/seth2177/dicom-ai-router/blob/main/docs/AWS.md), a CloudFormation reference deployment (ECS Fargate behind an internal NLB, EFS, Secrets Manager, CloudWatch Logs) with PHI/HIPAA notes and a cost estimate.
+
 ## Layout
 
 ```

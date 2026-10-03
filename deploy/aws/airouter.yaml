@@ -1,0 +1,610 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  dicom-ai-router reference deployment. One Fargate task (router, plus the mock model as a sidecar unless an external
+  model is configured) in private subnets, DICOM in through an internal NLB reachable only from the site CIDR,
+  state on encrypted EFS, de-id salt from Secrets Manager, audit trail in CloudWatch Logs. No public IPs.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Network (an existing VPC connected to the site by VPN or Direct Connect)}
+        Parameters: [VpcId, VpcCidr, PrivateSubnet1, PrivateSubnet2, PrivateRouteTableIds, S3PrefixListId, CreateVpcEndpoints]
+      - Label: {default: Site}
+        Parameters: [SiteCidr, RouterAeTitle, AllowedCallingAes, PacsAeTitle, PacsHost, PacsPort, PacsCidr]
+      - Label: {default: Model}
+        Parameters: [DeployMockAi, LungNoduleUrl, CtQaUrl, AiTransport, AiEgressCidr, AiEgressPort]
+      - Label: {default: Container}
+        Parameters: [EcrRepositoryName, ImageTag, TaskCpu, TaskMemory, LogRetentionDays]
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+    Description: CIDR of the VPC (tasks reach the VPC interface endpoints on 443 inside it).
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet, first AZ. No route to an internet gateway is needed.
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet, second AZ.
+  PrivateRouteTableIds:
+    Type: String
+    Default: ""
+    Description: Comma-separated route table IDs of the private subnets, for the S3 gateway endpoint (needed when CreateVpcEndpoints=true).
+  S3PrefixListId:
+    Type: String
+    Description: Managed prefix list of S3 in this region (ECR image layers come from S3). See docs/AWS.md for the lookup command.
+    AllowedPattern: ^pl-[0-9a-f]+$
+  CreateVpcEndpoints:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Create interface endpoints (ECR, Logs, Secrets Manager) and the S3 gateway endpoint. Set false if the VPC already has them.
+  SiteCidr:
+    Type: String
+    Description: Site network(s) reaching AWS over VPN or Direct Connect. Only this CIDR can open DICOM associations.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  RouterAeTitle:
+    Type: String
+    Default: AIROUTER
+    AllowedPattern: ^[A-Za-z0-9_\-]{1,16}$
+  AllowedCallingAes:
+    Type: String
+    Default: ""
+    Description: Comma-separated calling AE titles allowed to send (e.g. "CT01, CT02"). Empty accepts any calling AE.
+  PacsAeTitle:
+    Type: String
+    AllowedPattern: ^[A-Za-z0-9_\-]{1,16}$
+  PacsHost:
+    Type: String
+    Description: PACS IP or DNS name, reachable from the VPC.
+  PacsPort:
+    Type: Number
+    Default: 104
+    MinValue: 1
+    MaxValue: 65535
+  PacsCidr:
+    Type: String
+    Description: CIDR containing the PACS (a /32 for one host). Results leave only to this range.
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  DeployMockAi:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: true runs the mock model as a sidecar on localhost (synthetic data only). false uses the URLs below.
+  LungNoduleUrl:
+    Type: String
+    Default: ""
+    Description: Model endpoint for the lung-nodule rule when DeployMockAi=false (e.g. an in-VPC service in front of a SageMaker endpoint).
+  CtQaUrl:
+    Type: String
+    Default: ""
+    Description: Model endpoint for the ct-qa rule when DeployMockAi=false.
+  AiTransport:
+    Type: String
+    AllowedValues: [multipart, stow-rs]
+    Default: multipart
+  AiEgressCidr:
+    Type: String
+    Default: 10.0.0.0/8
+    Description: Where the external model lives (used when DeployMockAi=false).
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+  AiEgressPort:
+    Type: Number
+    Default: 443
+    MinValue: 1
+    MaxValue: 65535
+  EcrRepositoryName:
+    Type: String
+    Default: dicom-ai-router
+  ImageTag:
+    Type: String
+    Default: latest
+  TaskCpu:
+    Type: String
+    AllowedValues: ["1024", "2048", "4096"]
+    Default: "1024"
+    Description: Whole task (router + mock sidecar). Must be a valid Fargate pair with TaskMemory.
+  TaskMemory:
+    Type: String
+    AllowedValues: ["2048", "4096", "8192"]
+    Default: "4096"
+  LogRetentionDays:
+    Type: Number
+    Default: 2192
+    AllowedValues: [365, 731, 1827, 2192, 2557, 3653]
+    Description: Audit retention. 2192 days = 6 years, the HIPAA documentation retention period.
+
+Conditions:
+  MockAi: !Equals [!Ref DeployMockAi, "true"]
+  ExternalAi: !Equals [!Ref DeployMockAi, "false"]
+  VpcEndpoints: !Equals [!Ref CreateVpcEndpoints, "true"]
+
+Rules:
+  ExternalModelNeedsUrls:
+    RuleCondition: !Equals [!Ref DeployMockAi, "false"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref LungNoduleUrl, ""]]
+        AssertDescription: LungNoduleUrl is required when DeployMockAi is false.
+      - Assert: !Not [!Equals [!Ref CtQaUrl, ""]]
+        AssertDescription: CtQaUrl is required when DeployMockAi is false.
+  GatewayEndpointNeedsRouteTables:
+    RuleCondition: !Equals [!Ref CreateVpcEndpoints, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PrivateRouteTableIds, ""]]
+        AssertDescription: PrivateRouteTableIds is required when CreateVpcEndpoints is true.
+
+Resources:
+  # ---- encryption at rest: one customer-managed key for EFS, the secret and the logs ----------------
+  Key:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: dicom-ai-router data (EFS, de-id salt, audit logs)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdmin
+            Effect: Allow
+            Principal: {AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"}
+            Action: kms:*
+            Resource: "*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Principal: {Service: !Sub "logs.${AWS::Region}.${AWS::URLSuffix}"}
+            Action: [kms:Encrypt*, kms:Decrypt*, kms:ReEncrypt*, kms:GenerateDataKey*, kms:Describe*]
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/airouter/${AWS::StackName}"
+
+  KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/airouter-${AWS::StackName}"
+      TargetKeyId: !Ref Key
+
+  # ---- de-identification salt: generated once, never in a file or a parameter ---------------------
+  DeidSalt:
+    Type: AWS::SecretsManager::Secret
+    # Pseudonyms and the crosswalk depend on it: replacing it would split every patient in two.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: AIROUTER_DEID_SALT for dicom-ai-router. Must stay stable for the life of the deployment.
+      KmsKeyId: !Ref Key
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # ---- audit trail and service logs -----------------------------------------------------------------
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub "/airouter/${AWS::StackName}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt Key.Arn
+
+  # ---- security groups -----------------------------------------------------------------------------
+  NlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DICOM from the site only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 11112, ToPort: 11112, CidrIp: !Ref SiteCidr, Description: DICOM C-STORE from site}
+      SecurityGroupEgress:
+        - {IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: replaced by the rule to the task below}
+
+  NlbToTaskEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref NlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 11112
+      ToPort: 11112
+      DestinationSecurityGroupId: !Ref TaskSecurityGroup
+      Description: to the router task
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: dicom-ai-router task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 11112, ToPort: 11112, SourceSecurityGroupId: !Ref NlbSecurityGroup, Description: DICOM via the NLB}
+      SecurityGroupEgress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref VpcCidr, Description: VPC interface endpoints}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, DestinationPrefixListId: !Ref S3PrefixListId, Description: ECR image layers in S3}
+        - {IpProtocol: tcp, FromPort: !Ref PacsPort, ToPort: !Ref PacsPort, CidrIp: !Ref PacsCidr, Description: C-STORE results to PACS}
+
+  TaskToEfsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      DestinationSecurityGroupId: !Ref EfsSecurityGroup
+      Description: EFS (NFS over TLS)
+
+  TaskToModelEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: ExternalAi
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref AiEgressPort
+      ToPort: !Ref AiEgressPort
+      CidrIp: !Ref AiEgressCidr
+      Description: de-identified images to the model
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: dicom-ai-router EFS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 2049, ToPort: 2049, SourceSecurityGroupId: !Ref TaskSecurityGroup, Description: NFS from the task}
+      SecurityGroupEgress:
+        - {IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: no outbound}
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: VpcEndpoints
+    Properties:
+      GroupDescription: dicom-ai-router VPC endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref TaskSecurityGroup, Description: HTTPS from the task}
+      SecurityGroupEgress:
+        - {IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: no outbound}
+
+  # ---- VPC endpoints: AWS APIs without an internet path ----------------------------------------------
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: VpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: VpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: VpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: VpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: VpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds: !Split [",", !Ref PrivateRouteTableIds]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrLayersOnly
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "arn:${AWS::Partition}:s3:::prod-${AWS::Region}-starport-layer-bucket/*"
+
+  # ---- state: inbox, crosswalk (SQLite), results, audit file ------------------------------------------
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    # Holds the crosswalk back to real patients and the inbox copies: never deleted with the stack.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      KmsKeyId: !GetAtt Key.Arn
+      PerformanceMode: generalPurpose
+      ThroughputMode: elastic
+      BackupPolicy: {Status: ENABLED}
+      LifecyclePolicies:                                 # the router never purges its inbox; old copies go to IA
+        - {TransitionToIA: AFTER_30_DAYS}
+        - {TransitionToPrimaryStorageClass: AFTER_1_ACCESS}
+      FileSystemPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: {AWS: "*"}
+            Action: "*"
+            Condition: {Bool: {aws:SecureTransport: "false"}}
+          # Delegates to IAM: only identities granted ClientMount (the task role, via the access point) get in.
+          - Sid: MountTargetsAndIamOnly
+            Effect: Allow
+            Principal: {AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"}
+            Action: [elasticfilesystem:ClientMount, elasticfilesystem:ClientWrite]
+            Condition: {Bool: {elasticfilesystem:AccessedViaMountTarget: "true"}}
+      FileSystemTags:
+        - {Key: Name, Value: !Sub "airouter-${AWS::StackName}"}
+
+  MountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  MountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  AccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser: {Uid: "10001", Gid: "10001"}           # the image's non-root user
+      RootDirectory:
+        Path: /airouter
+        CreationInfo: {OwnerUid: "10001", OwnerGid: "10001", Permissions: "0750"}
+
+  # ---- IAM: execution role (pull, logs, secret) and task role (EFS only) -------------------------------
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike: {aws:SourceArn: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"}
+      Policies:
+        - PolicyName: pull-log-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"                               # this action has no resource-level scoping
+              - Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: !Sub "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepositoryName}"
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${LogGroup.Arn}"
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DeidSalt
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt Key.Arn
+                Condition:
+                  StringEquals: {kms:ViaService: !Sub "secretsmanager.${AWS::Region}.${AWS::URLSuffix}"}
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike: {aws:SourceArn: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"}
+      Policies:
+        - PolicyName: efs-access-point
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [elasticfilesystem:ClientMount, elasticfilesystem:ClientWrite]
+                Resource: !GetAtt FileSystem.Arn
+                Condition:
+                  StringEquals: {elasticfilesystem:AccessPointArn: !GetAtt AccessPoint.Arn}
+
+  # ---- compute ----------------------------------------------------------------------------------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterSettings:
+        - {Name: containerInsights, Value: disabled}
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "airouter-${AWS::StackName}"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      RuntimePlatform: {OperatingSystemFamily: LINUX, CpuArchitecture: X86_64}
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig: {AccessPointId: !Ref AccessPoint, IAM: ENABLED}
+        - Name: tmp                                        # scratch space; the root filesystem is read-only
+      ContainerDefinitions:
+        - Name: router
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${EcrRepositoryName}:${ImageTag}"
+          Essential: true
+          ReadonlyRootFilesystem: true
+          LinuxParameters: {Capabilities: {Drop: [ALL]}, InitProcessEnabled: true}
+          PortMappings:
+            - {ContainerPort: 11112, Protocol: tcp}
+          MountPoints:
+            - {SourceVolume: data, ContainerPath: /data}
+            - {SourceVolume: tmp, ContainerPath: /tmp}
+          Secrets:
+            - {Name: AIROUTER_DEID_SALT, ValueFrom: !Ref DeidSalt}
+          Environment:
+            - {Name: AIROUTER_AUDIT_STDOUT, Value: "1"}
+            - {Name: PYTHONDONTWRITEBYTECODE, Value: "1"}
+            - {Name: AIROUTER_AE_TITLE, Value: !Ref RouterAeTitle}
+            - {Name: AIROUTER_ALLOWED_CALLING_AES, Value: !Ref AllowedCallingAes}
+            - {Name: AIROUTER_PACS_AE_TITLE, Value: !Ref PacsAeTitle}
+            - {Name: AIROUTER_PACS_HOST, Value: !Ref PacsHost}
+            - {Name: AIROUTER_PACS_PORT, Value: !Ref PacsPort}
+            - {Name: AIROUTER_AI_TRANSPORT, Value: !Ref AiTransport}
+            - Name: AIROUTER_AI_URL_LUNG_NODULE
+              Value: !If [MockAi, "http://127.0.0.1:8500/infer/lung-nodule", !Ref LungNoduleUrl]
+            - Name: AIROUTER_AI_URL_CT_QA
+              Value: !If [MockAi, "http://127.0.0.1:8500/infer/ct-qa", !Ref CtQaUrl]
+          HealthCheck:
+            Command: [CMD, python, -c, "import socket; socket.create_connection(('127.0.0.1', 11112), 2).close()"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          DependsOn: !If
+            - MockAi
+            - [{ContainerName: mock-ai, Condition: HEALTHY}]
+            - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: router
+        - !If
+          - MockAi
+          - Name: mock-ai
+            Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${EcrRepositoryName}:${ImageTag}"
+            Essential: true
+            ReadonlyRootFilesystem: true
+            LinuxParameters: {Capabilities: {Drop: [ALL]}, InitProcessEnabled: true}
+            Command: [uvicorn, "airouter.mock_ai.app:app", --host, 127.0.0.1, --port, "8500"]
+            MountPoints:
+              - {SourceVolume: tmp, ContainerPath: /tmp}
+            Environment:
+              - {Name: PYTHONDONTWRITEBYTECODE, Value: "1"}
+            HealthCheck:
+              Command: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8500/health', timeout=2)"]
+              Interval: 15
+              Timeout: 5
+              Retries: 3
+              StartPeriod: 20
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Ref LogGroup
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: mock-ai
+          - !Ref AWS::NoValue
+
+  # ---- DICOM ingress: internal NLB, TCP 11112 ---------------------------------------------------------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: network
+      Scheme: internal
+      Subnets: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroups: [!Ref NlbSecurityGroup]
+      LoadBalancerAttributes:
+        - {Key: load_balancing.cross_zone.enabled, Value: "true"}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: 11112
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      TargetGroupAttributes:
+        - {Key: deregistration_delay.timeout_seconds, Value: "30"}
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: 11112
+      DefaultActions:
+        - {Type: forward, TargetGroupArn: !Ref TargetGroup}
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [Listener, MountTarget1, MountTarget2]
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      # Exactly one task: the SQLite store on EFS must have a single writer, so a deployment stops
+      # the old task before starting the new one (a short DICOM outage; modalities retry and queue).
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker: {Enable: true, Rollback: true}
+      HealthCheckGracePeriodSeconds: 60
+      EnableExecuteCommand: false
+      PropagateTags: SERVICE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - {ContainerName: router, ContainerPort: 11112, TargetGroupArn: !Ref TargetGroup}
+
+Outputs:
+  DicomEndpoint:
+    Description: "Configure modalities to send here: AE title @ host : port."
+    Value: !Sub "${RouterAeTitle}@${LoadBalancer.DNSName}:11112"
+  LoadBalancerDns:
+    Value: !GetAtt LoadBalancer.DNSName
+  AuditLogGroup:
+    Value: !Ref LogGroup
+  FileSystemId:
+    Description: Retained on stack deletion (holds the crosswalk).
+    Value: !Ref FileSystem
+  DeidSaltSecretArn:
+    Description: Retained on stack deletion.
+    Value: !Ref DeidSalt
+  KmsKeyArn:
+    Description: Retained on stack deletion.
+    Value: !GetAtt Key.Arn

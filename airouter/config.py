@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,9 +73,25 @@ class Config:
         return self.workdir / "audit.jsonl"
 
 
+ENV_RX = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(?::-([^}]*))?\}")
+
+
+def expand_env(text: str) -> str:
+    """${NAME} or ${NAME:-default} in the YAML, filled from the environment, so one config file serves
+    every deployment (docker compose, ECS). A ${NAME} with no default and no value is an error."""
+    def sub(m: re.Match) -> str:
+        value = os.environ.get(m.group(1))
+        if value is None or (value == "" and m.group(2) is not None):
+            if m.group(2) is None:
+                raise ValueError(f"config needs environment variable {m.group(1)}")
+            return m.group(2)
+        return value
+    return ENV_RX.sub(sub, text)
+
+
 def load_config(path: str | Path, overrides: dict | None = None, require_salt: bool = True) -> Config:
     """require_salt=False only for read-only commands (status) that never de-identify anything."""
-    raw = yaml.safe_load(Path(path).read_text())
+    raw = yaml.safe_load(expand_env(Path(path).read_text()))
     if overrides:
         _deep_update(raw, overrides)
     r = raw["router"]
