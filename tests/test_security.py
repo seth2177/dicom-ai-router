@@ -286,3 +286,49 @@ def test_audit_negative_control_covers_every_check(tmp_path):
     r = phi_audit.audit(tmp_path, {"LAKESIDE"}, {str(ds.SOPInstanceUID)}, originals=[ds])
     missing = [c for c, n in r["counts"].items() if n == 0]
     assert missing == [], missing
+
+
+def test_revised_sr_references_its_predecessor_across_restarts(tmp_path, monkeypatch):
+    """Late images change the findings: the new SR must point at the one already in PACS
+    (PredecessorDocumentsSequence), and the chain must survive a router restart."""
+    from airouter import ai_client, sender
+    from airouter.audit import Audit
+    from airouter.pipeline import inbox_folder, process_study
+    from airouter.store import Store
+    cfg = load_config(CFG, {"router": {"workdir": str(tmp_path)}, "deid": {"salt": SALT}})
+    slices, _ = make_study(12, "chest")
+    study = str(slices[0].StudyInstanceUID)
+    folder = inbox_folder(cfg, study)
+    folder.mkdir(parents=True)
+    for d in slices:
+        d.save_as(folder / f"{d.SOPInstanceUID}.dcm", enforce_file_format=True)
+    sent = []
+    monkeypatch.setattr(sender, "c_store", lambda out, *a, **k: sent.append(out[0]) or len(out))
+    negative = {"model": "lung-nodule", "model_version": "t", "result": "NEGATIVE", "summary_lines": [["Result", "none"]]}
+    positive = dict(negative, result="POSITIVE", summary_lines=[["Finding 1", "pulmonary nodule, left lung"]])
+
+    def run(ai):
+        monkeypatch.setattr(ai_client, "infer", lambda *a, **k: dict(ai))
+        store = Store(cfg.db_path)                               # a fresh Store each run = a restart
+        store.instance_received(study, "CT")
+        assert process_study(study, cfg, store, Audit(cfg.audit_path)) == "DONE"
+        return sent[-1]
+
+    first = run(negative)
+    assert "PredecessorDocumentsSequence" not in first
+    revised = run(positive)
+    ref = revised.PredecessorDocumentsSequence[0]
+    assert ref.StudyInstanceUID == study
+    assert ref.ReferencedSeriesSequence[0].SeriesInstanceUID == first.SeriesInstanceUID
+    sop = ref.ReferencedSeriesSequence[0].ReferencedSOPSequence[0]
+    assert sop.ReferencedSOPInstanceUID == first.SOPInstanceUID and sop.ReferencedSOPClassUID == results.BASIC_TEXT_SR
+    # Re-run with unchanged findings: the identical object again, still pointing at the same predecessor
+    again = run(positive)
+    assert again.SOPInstanceUID == revised.SOPInstanceUID
+    assert again.PredecessorDocumentsSequence == revised.PredecessorDocumentsSequence
+    # Back to the first answer: NOT the first SR again (that one had no predecessor), a new one revising `revised`
+    back = run(negative)
+    assert back.SOPInstanceUID not in (first.SOPInstanceUID, revised.SOPInstanceUID)
+    assert back.PredecessorDocumentsSequence[0].ReferencedSeriesSequence[0].ReferencedSOPSequence[0].ReferencedSOPInstanceUID \
+        == revised.SOPInstanceUID
+    assert '"revises"' in (tmp_path / "audit.jsonl").read_text()

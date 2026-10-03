@@ -87,6 +87,7 @@ docker compose up --build              # router + mock AI + Orthanc PACS at http
 | Untrusted network input | UIDs validated before they become file paths; called AE enforced; optional calling-AE allow-list; atomic writes | `router.py` |
 | Real studies contain localizers and dose screens | Dropped per image and audited, never failing the study; `series: largest` for single-volume models | `pipeline.py` |
 | Radiologists need to see it; systems need to parse it | Basic Text SR *and* a Secondary Capture key image, both in the original study | `results.py` |
+| Late images change the answer after a result is already in PACS | The revised SR is a new instance that references the one it replaces (`PredecessorDocumentsSequence`); the chain is kept in SQLite, so it survives restarts | `results.py`, `pipeline.py`, `store.py` |
 | Picky PACS reject associations | Proposes only the SOP classes actually being sent | `sender.py` |
 | Models and networks fail | Retry with exponential backoff; 4xx never retried; failures recorded, never dropped | `ai_client.py`, `sender.py` |
 | Security review and turnaround time | JSONL audit of every hop with ms timings, no names or MRNs | `audit.py` |
@@ -146,8 +147,7 @@ The demo generates a throwaway salt on every run. The service refuses to start w
 
 Known limits: the de-identification is a documented subset of PS3.15, not a certified profile. It retains
 study and series descriptions, which are pattern-scrubbed. Pixel data is never altered, so burned-in images are
-dropped. The model transport is multipart/form-data, not STOW-RS. A revised result (after late images) is a new
-instance in the same series; the SR does not yet reference its predecessor (`PredecessorDocumentsSequence`).
+dropped. The model transport is multipart/form-data, not STOW-RS.
 
 This is a demonstration and reference build, not a medical device. All patients, identifiers and images in the repo are synthetic. The de-identification covers a documented subset of the standard and does not alter pixel data. Don't point it at production PHI without a formal review.
 

@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS crosswalk(
   orig_uid TEXT NOT NULL,
   kind TEXT NOT NULL      -- study, series, sop, frame
 );
+CREATE TABLE IF NOT EXISTS sent_sr(  -- every result SR delivered to PACS: the predecessor chain for revisions
+  sop_uid TEXT PRIMARY KEY,
+  study_uid TEXT NOT NULL, model TEXT NOT NULL,
+  series_uid TEXT NOT NULL, sop_class TEXT NOT NULL,
+  digest TEXT NOT NULL,    -- what the SR says (results.content_digest)
+  predecessor TEXT,        -- sop_uid of the SR this one revised
+  sent REAL
+);
 """
 
 
@@ -66,3 +74,23 @@ class Store:
         with self._lock:
             row = self._db.execute("SELECT orig_uid FROM crosswalk WHERE anon_uid = ?", (anon_uid,)).fetchone()
         return row["orig_uid"] if row else None
+
+    def record_sr(self, study_uid: str, model: str, sr, digest: str, predecessor: str | None) -> None:
+        """After PACS accepted it. Re-sending the same SR moves it back to the head of the chain."""
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM sent_sr WHERE sop_uid = ?", (str(sr.SOPInstanceUID),))
+            self._db.execute(
+                "INSERT INTO sent_sr(sop_uid, study_uid, model, series_uid, sop_class, digest, predecessor, sent) VALUES(?,?,?,?,?,?,?,?)",
+                (str(sr.SOPInstanceUID), study_uid, model, str(sr.SeriesInstanceUID), str(sr.SOPClassUID), digest, predecessor, time.time()),
+            )
+
+    def latest_sr(self, study_uid: str, model: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM sent_sr WHERE study_uid = ? AND model = ? ORDER BY rowid DESC LIMIT 1",
+                                   (study_uid, model)).fetchone()
+        return dict(row) if row else None
+
+    def sent_sr(self, sop_uid: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM sent_sr WHERE sop_uid = ?", (sop_uid,)).fetchone()
+        return dict(row) if row else None

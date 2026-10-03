@@ -87,13 +87,19 @@ def process_study(study_uid: str, cfg: Config, store: Store, audit: Audit) -> st
         # 7. Build result objects inside the ORIGINAL study.
         with audit.step(study_uid, "build_results") as x:
             key_ds = next((o for o in used if o.SOPInstanceUID == key_orig_uid), used[len(used) // 2])
-            out = [results.build_sr(used[0], used, ai, key_orig_uid), results.build_key_image(key_ds, ai, key_orig_uid is not None)]
+            model, digest = str(ai.get("model")), results.content_digest(ai)
+            predecessor = predecessor_for(store, study_uid, model, digest)
+            sr = results.build_sr(used[0], used, ai, key_orig_uid, predecessor)
+            out = [sr, results.build_key_image(key_ds, ai, key_orig_uid is not None)]
             x["objects"] = [o.Modality for o in out]
+            if predecessor:
+                x["revises"] = predecessor["sop_uid"]
 
         # 8. Return to PACS.
         with audit.step(study_uid, "c_store_pacs", pacs=f"{cfg.pacs.ae_title}@{cfg.pacs.host}:{cfg.pacs.port}") as x:
             x["sent"] = sender.c_store(out, cfg.pacs.host, cfg.pacs.port, cfg.pacs.ae_title,
                                        calling_ae=cfg.ae_title, retries=cfg.pacs.retries)
+        store.record_sr(study_uid, model, sr, digest, predecessor["sop_uid"] if predecessor else None)
 
         summary = "; ".join(f"{v}" for k, v in results.finding_lines(ai)[1:-1])
         _write_result(cfg, study_uid, rule.name, ai, key_orig_uid)
@@ -104,6 +110,17 @@ def process_study(study_uid: str, cfg: Config, store: Store, audit: Audit) -> st
         log.exception("study %s failed", study_uid)
         store.set_state(study_uid, "FAILED", error=f"{type(e).__name__}: {e}")
         return "FAILED"
+
+
+def predecessor_for(store: Store, study_uid: str, model: str, digest: str) -> dict | None:
+    """The SR a new result revises. Same findings as the last one sent: re-send that SR unchanged (with
+    whatever it revised). Different findings: the last one sent is the predecessor. Nothing sent yet: None."""
+    last = store.latest_sr(study_uid, model)
+    if last is None:
+        return None
+    if last["digest"] == digest:
+        return store.sent_sr(last["predecessor"]) if last["predecessor"] else None
+    return last
 
 
 IMAGE_SOP_CLASSES = {"1.2.840.10008.5.1.4.1.1.2", "1.2.840.10008.5.1.4.1.1.2.1"}   # CT, Enhanced CT

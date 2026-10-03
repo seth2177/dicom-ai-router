@@ -157,7 +157,10 @@ unfinished, and the next start picks it up again. If more images arrive while a 
 again after the current run finishes, never twice at once. Result UIDs are deterministic: the series is derived from
 the study and the model, and each instance also from a digest of what the result says. A re-run with the same
 findings re-sends the identical objects, with no duplicates. A re-run with different findings (late images) adds a
-new instance in the same series, as DICOM requires for changed content, so a PACS can't silently keep the stale one. A study that
+new instance in the same series, as DICOM requires for changed content, so a PACS can't silently keep the stale one.
+That revised SR carries `PredecessorDocumentsSequence` (study > series > instance) pointing at the SR it replaces,
+so a reporting system can tell which result is current. Every SR delivered to PACS is recorded in the `sent_sr`
+table in SQLite, so the chain survives a restart; a SR is recorded only after PACS accepted it. A study that
 FAILED can be re-run with `python -m airouter rerun --failed` once the fault is fixed.
 
 ## The audit trail (`data/audit.jsonl`)

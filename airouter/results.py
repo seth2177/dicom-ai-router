@@ -118,9 +118,13 @@ def finding_lines(ai: dict) -> list[tuple[str, str]]:
     return lines
 
 
-def build_sr(orig_first: Dataset, originals: list[Dataset], ai: dict, key_sop_uid: str | None) -> Dataset:
+def build_sr(orig_first: Dataset, originals: list[Dataset], ai: dict, key_sop_uid: str | None,
+             predecessor: dict | None = None) -> Dataset:
+    """predecessor: the SR this one revises ({sop_uid, series_uid, sop_class}, from Store.sent_sr), or None.
+    It is part of the instance UID: the same findings revising a different SR is different content."""
+    content = content_digest(ai) + (f"|{predecessor['sop_uid']}" if predecessor else "")
     ds = _base(orig_first, BASIC_TEXT_SR, "SR", 9901, f"AI Results - {ai.get('model')} (NOT FOR DIAGNOSIS)",
-               model_key=str(ai.get("model")), content=content_digest(ai))
+               model_key=str(ai.get("model")), content=content)
     ds.CompletionFlag = "COMPLETE"
     ds.VerificationFlag = "UNVERIFIED"
     ds.ValueType = "CONTAINER"
@@ -130,6 +134,19 @@ def build_sr(orig_first: Dataset, originals: list[Dataset], ai: dict, key_sop_ui
     # SR Document General module, Type 2: present, empty (no procedure-step linkage here)
     ds.PerformedProcedureCodeSequence = Sequence([])
     ds.ReferencedPerformedProcedureStepSequence = Sequence([])
+    if predecessor:
+        # SR Document General module, Type 1C: required when this document replaces an earlier one.
+        # Hierarchical SOP Instance Reference: study > series > instance.
+        ref = Dataset()
+        ref.ReferencedSOPClassUID = predecessor["sop_class"]
+        ref.ReferencedSOPInstanceUID = predecessor["sop_uid"]
+        series = Dataset()
+        series.SeriesInstanceUID = predecessor["series_uid"]
+        series.ReferencedSOPSequence = Sequence([ref])
+        study = Dataset()
+        study.StudyInstanceUID = orig_first.StudyInstanceUID
+        study.ReferencedSeriesSequence = Sequence([series])
+        ds.PredecessorDocumentsSequence = Sequence([study])
 
     items = [_text_item(i, label, value) for i, (label, value) in enumerate(finding_lines(ai), 1)]
     if key_sop_uid:
